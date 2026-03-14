@@ -1,0 +1,1 @@
+web: streamlit run app.py --server.port $PORT --server.headless true --server.enableCORS false --server.enableXsrfProtection false --theme.base dark --theme.primaryColor "#00d2be" --theme.backgroundColor "#060e1a" --theme.secondaryBackgroundColor "#0a1628" --theme.textColor "#e6f1ff"
