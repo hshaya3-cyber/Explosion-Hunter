@@ -275,100 +275,100 @@ def fetch_stock_data(ticker, max_retries=2):
                     time.sleep(1)
                     continue
                 return None
-        current_price = hist['Close'].iloc[-1]
-        prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
-        daily_change_pct = ((current_price - prev_close) / prev_close) * 100
-        avg_volume_20 = hist['Volume'].iloc[-20:].mean()
-        current_volume = hist['Volume'].iloc[-1]
-        volume_ratio = (current_volume / avg_volume_20 * 100) - 100 if avg_volume_20 > 0 else 0
-        vol_3d = hist['Volume'].iloc[-3:].mean()
-        vol_trend_rising = vol_3d > avg_volume_20 * 1.5
-        delta = hist['Close'].diff()
-        gain = delta.where(delta > 0, 0); loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.rolling(window=14).mean(); avg_loss = loss.rolling(window=14).mean()
-        rs = avg_gain / avg_loss; rsi = 100 - (100 / (1 + rs))
-        current_rsi = rsi.iloc[-1] if not rsi.empty and not np.isnan(rsi.iloc[-1]) else 50
-        sma20 = hist['Close'].rolling(window=20).mean(); std20 = hist['Close'].rolling(window=20).std()
-        bb_upper = sma20 + (2 * std20); bb_lower = sma20 - (2 * std20)
-        bb_width = ((bb_upper - bb_lower) / sma20 * 100).iloc[-1] if not sma20.empty else 10
-        bb_width_series = (bb_upper - bb_lower) / sma20 * 100
-        bb_width_min_20 = bb_width_series.iloc[-20:].min() if len(bb_width_series) >= 20 else bb_width
-        bollinger_squeeze = bb_width <= bb_width_min_20 * 1.1
-        tr_series = pd.DataFrame({'hl': hist['High'] - hist['Low'], 'hc': abs(hist['High'] - hist['Close'].shift(1)), 'lc': abs(hist['Low'] - hist['Close'].shift(1))}).max(axis=1)
-        atr20 = tr_series.rolling(window=20).mean()
-        kc_upper = sma20 + (1.5 * atr20); kc_lower = sma20 - (1.5 * atr20)
-        ttm_squeeze = False; squeeze_bars = 0
-        if len(bb_upper) >= 20 and len(kc_upper) >= 20:
-            for i in range(1, min(21, len(bb_upper))):
-                try:
-                    if bb_upper.iloc[-i] < kc_upper.iloc[-i] and bb_lower.iloc[-i] > kc_lower.iloc[-i]:
-                        squeeze_bars += 1; ttm_squeeze = True
-                    else: break
-                except: break
-        obv = [0]
-        for i in range(1, len(hist)):
-            if hist['Close'].iloc[i] > hist['Close'].iloc[i-1]: obv.append(obv[-1] + hist['Volume'].iloc[i])
-            elif hist['Close'].iloc[i] < hist['Close'].iloc[i-1]: obv.append(obv[-1] - hist['Volume'].iloc[i])
-            else: obv.append(obv[-1])
-        obv_series = pd.Series(obv, index=hist.index); obv_sma = obv_series.rolling(window=20).mean()
-        obv_trend = 'Bullish' if obv_series.iloc[-1] > obv_sma.iloc[-1] else 'Bearish'
-        if obv_series.iloc[-1] > obv_sma.iloc[-1] * 1.1: obv_trend = 'Strong Bullish'
-        typical_price = (hist['High'] + hist['Low'] + hist['Close']) / 3
-        money_flow = typical_price * hist['Volume']
-        positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0)
-        negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0)
-        positive_mf = positive_flow.rolling(window=14).sum(); negative_mf = negative_flow.rolling(window=14).sum()
-        mfi = 100 - (100 / (1 + positive_mf / negative_mf))
-        current_mfi = mfi.iloc[-1] if not mfi.empty and not np.isnan(mfi.iloc[-1]) else 50
-        high_52 = hist['High'].max(); low_52 = hist['Low'].min()
-        pct_from_low = ((current_price - low_52) / low_52 * 100) if low_52 > 0 else 0
-        gap_up_target = None
-        for i in range(len(hist) - 2, max(0, len(hist) - 60), -1):
-            gap = hist['Low'].iloc[i+1] - hist['High'].iloc[i]
-            if gap > current_price * 0.03: gap_up_target = hist['High'].iloc[i]; break
-        short_interest = info.get('shortPercentOfFloat', 0)
-        if short_interest is None: short_interest = 0
-        short_interest = short_interest * 100 if short_interest < 1 else short_interest
-        short_ratio = info.get('shortRatio', 0) or 0
-        float_shares = info.get('floatShares', 0) or 0
-        float_display = f'{float_shares/1e6:.0f}M' if float_shares > 1e6 else f'{float_shares/1e3:.0f}K'
-        float_small = float_shares < 50e6 if float_shares > 0 else False
-        market_cap = info.get('marketCap', 0) or 0
-        if market_cap >= 10e9: cap_label, cap_display = 'Large Cap', f'${market_cap/1e9:.1f}B'
-        elif market_cap >= 2e9: cap_label, cap_display = 'Mid Cap', f'${market_cap/1e9:.1f}B'
-        elif market_cap >= 300e6: cap_label, cap_display = 'Small Cap', f'${market_cap/1e6:.0f}M'
-        else: cap_label, cap_display = 'Micro Cap', f'${market_cap/1e6:.0f}M'
-        industry = (info.get('industry', '') or '').lower(); sector_raw = (info.get('sector', '') or '').lower()
-        if any(k in industry for k in ['biotech', 'pharma', 'drug', 'therapeutic', 'genomic']): sector = 'biotech'
-        elif any(k in industry for k in ['software', 'semiconductor', 'computer', 'internet', 'ai', 'quantum']): sector = 'tech'
-        elif any(k in industry for k in ['bank', 'financial', 'insurance', 'fintech', 'payment']): sector = 'fintech'
-        elif any(k in sector_raw for k in ['energy']): sector = 'energy'
-        else: sector = 'other'
-        is_exploding = daily_change_pct > 15 and volume_ratio > 300
-        earnings_date = None
-        try:
-            cal = stock.calendar
-            if cal is not None:
-                if isinstance(cal, dict):
-                    ed = cal.get('Earnings Date', [])
-                    if ed: earnings_date = ed[0] if isinstance(ed, list) else ed
-                elif isinstance(cal, pd.DataFrame) and not cal.empty:
-                    if 'Earnings Date' in cal.index: earnings_date = cal.loc['Earnings Date'].iloc[0]
-        except: pass
-        catalyst_type, catalyst_label, catalyst_date = 'None', 'None', ''
-        if earnings_date:
+            current_price = hist['Close'].iloc[-1]
+            prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
+            daily_change_pct = ((current_price - prev_close) / prev_close) * 100
+            avg_volume_20 = hist['Volume'].iloc[-20:].mean()
+            current_volume = hist['Volume'].iloc[-1]
+            volume_ratio = (current_volume / avg_volume_20 * 100) - 100 if avg_volume_20 > 0 else 0
+            vol_3d = hist['Volume'].iloc[-3:].mean()
+            vol_trend_rising = vol_3d > avg_volume_20 * 1.5
+            delta = hist['Close'].diff()
+            gain = delta.where(delta > 0, 0); loss = -delta.where(delta < 0, 0)
+            avg_gain = gain.rolling(window=14).mean(); avg_loss = loss.rolling(window=14).mean()
+            rs = avg_gain / avg_loss; rsi = 100 - (100 / (1 + rs))
+            current_rsi = rsi.iloc[-1] if not rsi.empty and not np.isnan(rsi.iloc[-1]) else 50
+            sma20 = hist['Close'].rolling(window=20).mean(); std20 = hist['Close'].rolling(window=20).std()
+            bb_upper = sma20 + (2 * std20); bb_lower = sma20 - (2 * std20)
+            bb_width = ((bb_upper - bb_lower) / sma20 * 100).iloc[-1] if not sma20.empty else 10
+            bb_width_series = (bb_upper - bb_lower) / sma20 * 100
+            bb_width_min_20 = bb_width_series.iloc[-20:].min() if len(bb_width_series) >= 20 else bb_width
+            bollinger_squeeze = bb_width <= bb_width_min_20 * 1.1
+            tr_series = pd.DataFrame({'hl': hist['High'] - hist['Low'], 'hc': abs(hist['High'] - hist['Close'].shift(1)), 'lc': abs(hist['Low'] - hist['Close'].shift(1))}).max(axis=1)
+            atr20 = tr_series.rolling(window=20).mean()
+            kc_upper = sma20 + (1.5 * atr20); kc_lower = sma20 - (1.5 * atr20)
+            ttm_squeeze = False; squeeze_bars = 0
+            if len(bb_upper) >= 20 and len(kc_upper) >= 20:
+                for i in range(1, min(21, len(bb_upper))):
+                    try:
+                        if bb_upper.iloc[-i] < kc_upper.iloc[-i] and bb_lower.iloc[-i] > kc_lower.iloc[-i]:
+                            squeeze_bars += 1; ttm_squeeze = True
+                        else: break
+                    except: break
+            obv = [0]
+            for i in range(1, len(hist)):
+                if hist['Close'].iloc[i] > hist['Close'].iloc[i-1]: obv.append(obv[-1] + hist['Volume'].iloc[i])
+                elif hist['Close'].iloc[i] < hist['Close'].iloc[i-1]: obv.append(obv[-1] - hist['Volume'].iloc[i])
+                else: obv.append(obv[-1])
+            obv_series = pd.Series(obv, index=hist.index); obv_sma = obv_series.rolling(window=20).mean()
+            obv_trend = 'Bullish' if obv_series.iloc[-1] > obv_sma.iloc[-1] else 'Bearish'
+            if obv_series.iloc[-1] > obv_sma.iloc[-1] * 1.1: obv_trend = 'Strong Bullish'
+            typical_price = (hist['High'] + hist['Low'] + hist['Close']) / 3
+            money_flow = typical_price * hist['Volume']
+            positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0)
+            negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0)
+            positive_mf = positive_flow.rolling(window=14).sum(); negative_mf = negative_flow.rolling(window=14).sum()
+            mfi = 100 - (100 / (1 + positive_mf / negative_mf))
+            current_mfi = mfi.iloc[-1] if not mfi.empty and not np.isnan(mfi.iloc[-1]) else 50
+            high_52 = hist['High'].max(); low_52 = hist['Low'].min()
+            pct_from_low = ((current_price - low_52) / low_52 * 100) if low_52 > 0 else 0
+            gap_up_target = None
+            for i in range(len(hist) - 2, max(0, len(hist) - 60), -1):
+                gap = hist['Low'].iloc[i+1] - hist['High'].iloc[i]
+                if gap > current_price * 0.03: gap_up_target = hist['High'].iloc[i]; break
+            short_interest = info.get('shortPercentOfFloat', 0)
+            if short_interest is None: short_interest = 0
+            short_interest = short_interest * 100 if short_interest < 1 else short_interest
+            short_ratio = info.get('shortRatio', 0) or 0
+            float_shares = info.get('floatShares', 0) or 0
+            float_display = f'{float_shares/1e6:.0f}M' if float_shares > 1e6 else f'{float_shares/1e3:.0f}K'
+            float_small = float_shares < 50e6 if float_shares > 0 else False
+            market_cap = info.get('marketCap', 0) or 0
+            if market_cap >= 10e9: cap_label, cap_display = 'Large Cap', f'${market_cap/1e9:.1f}B'
+            elif market_cap >= 2e9: cap_label, cap_display = 'Mid Cap', f'${market_cap/1e9:.1f}B'
+            elif market_cap >= 300e6: cap_label, cap_display = 'Small Cap', f'${market_cap/1e6:.0f}M'
+            else: cap_label, cap_display = 'Micro Cap', f'${market_cap/1e6:.0f}M'
+            industry = (info.get('industry', '') or '').lower(); sector_raw = (info.get('sector', '') or '').lower()
+            if any(k in industry for k in ['biotech', 'pharma', 'drug', 'therapeutic', 'genomic']): sector = 'biotech'
+            elif any(k in industry for k in ['software', 'semiconductor', 'computer', 'internet', 'ai', 'quantum']): sector = 'tech'
+            elif any(k in industry for k in ['bank', 'financial', 'insurance', 'fintech', 'payment']): sector = 'fintech'
+            elif any(k in sector_raw for k in ['energy']): sector = 'energy'
+            else: sector = 'other'
+            is_exploding = daily_change_pct > 15 and volume_ratio > 300
+            earnings_date = None
             try:
-                ed = pd.Timestamp(earnings_date); days_until = (ed - pd.Timestamp.now()).days
-                if 0 <= days_until <= 14: catalyst_type, catalyst_label, catalyst_date = 'Earnings', 'Earnings Report', ed.strftime('%b %d')
+                cal = stock.calendar
+                if cal is not None:
+                    if isinstance(cal, dict):
+                        ed = cal.get('Earnings Date', [])
+                        if ed: earnings_date = ed[0] if isinstance(ed, list) else ed
+                    elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                        if 'Earnings Date' in cal.index: earnings_date = cal.loc['Earnings Date'].iloc[0]
             except: pass
-        if sector == 'biotech' and catalyst_type == 'None': catalyst_type, catalyst_label, catalyst_date = 'FDA', 'Potential FDA Event', 'Upcoming'
-        insider_pct = info.get('heldPercentInsiders', 0) or 0; insider_buys_est = 1 if insider_pct > 0.1 else 0
-        return {'ticker': ticker, 'name': info.get('shortName', ticker), 'exchange': info.get('exchange', 'N/A'), 'sector': sector, 'marketCap': cap_display, 'capCategory': cap_label, 'price': round(current_price, 2), 'prevClose': round(prev_close, 2), 'dailyChangePct': round(daily_change_pct, 2), 'low52': round(low_52, 2), 'high52': round(high_52, 2), 'pctFromLow': round(pct_from_low, 2), 'shortInterest': round(short_interest, 1), 'shortRatio': round(short_ratio, 1), 'rsi': round(current_rsi, 1), 'mfi': round(current_mfi, 1), 'volumeChange': round(volume_ratio, 0), 'avgVolume': avg_volume_20, 'currentVolume': current_volume, 'volumeMultiple': round(current_volume / avg_volume_20, 1) if avg_volume_20 > 0 else 1, 'volTrendRising': vol_trend_rising, 'catalyst': {'type': catalyst_type, 'label': catalyst_label, 'date': catalyst_date}, 'news': vol_trend_rising and volume_ratio > 200, 'ttmSqueeze': ttm_squeeze, 'squeezeBars': squeeze_bars, 'bollingerSqueeze': bollinger_squeeze, 'bbWidth': round(bb_width, 2), 'obvTrend': obv_trend, 'float': float_display, 'floatShares': float_shares, 'floatSmall': float_small, 'gapUpTarget': round(gap_up_target, 2) if gap_up_target else None, 'insiderBuys': insider_buys_est, 'insiderPct': round(insider_pct * 100, 1), 'isExploding': is_exploding}
-    except:
-        if attempt < max_retries:
-            time.sleep(1.5)
-            continue
-        return None
+            catalyst_type, catalyst_label, catalyst_date = 'None', 'None', ''
+            if earnings_date:
+                try:
+                    ed = pd.Timestamp(earnings_date); days_until = (ed - pd.Timestamp.now()).days
+                    if 0 <= days_until <= 14: catalyst_type, catalyst_label, catalyst_date = 'Earnings', 'Earnings Report', ed.strftime('%b %d')
+                except: pass
+            if sector == 'biotech' and catalyst_type == 'None': catalyst_type, catalyst_label, catalyst_date = 'FDA', 'Potential FDA Event', 'Upcoming'
+            insider_pct = info.get('heldPercentInsiders', 0) or 0; insider_buys_est = 1 if insider_pct > 0.1 else 0
+            return {'ticker': ticker, 'name': info.get('shortName', ticker), 'exchange': info.get('exchange', 'N/A'), 'sector': sector, 'marketCap': cap_display, 'capCategory': cap_label, 'price': round(current_price, 2), 'prevClose': round(prev_close, 2), 'dailyChangePct': round(daily_change_pct, 2), 'low52': round(low_52, 2), 'high52': round(high_52, 2), 'pctFromLow': round(pct_from_low, 2), 'shortInterest': round(short_interest, 1), 'shortRatio': round(short_ratio, 1), 'rsi': round(current_rsi, 1), 'mfi': round(current_mfi, 1), 'volumeChange': round(volume_ratio, 0), 'avgVolume': avg_volume_20, 'currentVolume': current_volume, 'volumeMultiple': round(current_volume / avg_volume_20, 1) if avg_volume_20 > 0 else 1, 'volTrendRising': vol_trend_rising, 'catalyst': {'type': catalyst_type, 'label': catalyst_label, 'date': catalyst_date}, 'news': vol_trend_rising and volume_ratio > 200, 'ttmSqueeze': ttm_squeeze, 'squeezeBars': squeeze_bars, 'bollingerSqueeze': bollinger_squeeze, 'bbWidth': round(bb_width, 2), 'obvTrend': obv_trend, 'float': float_display, 'floatShares': float_shares, 'floatSmall': float_small, 'gapUpTarget': round(gap_up_target, 2) if gap_up_target else None, 'insiderBuys': insider_buys_est, 'insiderPct': round(insider_pct * 100, 1), 'isExploding': is_exploding}
+        except:
+            if attempt < max_retries:
+                time.sleep(1.5)
+                continue
+            return None
     return None
 
 
