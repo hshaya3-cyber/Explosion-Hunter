@@ -444,17 +444,28 @@ def calculate_explosion_score(stock):
 
 
 def fetch_all_stocks(watchlist):
-    """Fetch all stocks in batches to handle 1,160+ tickers without rate limits"""
+    """Fetch all stocks in batches with inline stop button"""
     results = []; failed = []
     progress_bar = st.progress(0)
     status_text = st.empty()
+    stop_container = st.empty()
     total = len(watchlist); completed = 0; lock = threading.Lock()
+    stopped = False
 
     # Process in batches of 50 to avoid rate limits
     BATCH_SIZE = 50
     batches = [watchlist[i:i+BATCH_SIZE] for i in range(0, len(watchlist), BATCH_SIZE)]
 
     for batch_idx, batch in enumerate(batches):
+        if stopped:
+            break
+
+        # Show stop button — clicking it sets session state and reruns
+        with stop_container:
+            if st.button('⏹️ Stop Scanning — Show Results So Far', key=f'stop_{batch_idx}', use_container_width=True):
+                stopped = True
+                break
+
         def fetch_one(ticker):
             nonlocal completed
             data = fetch_stock_data(ticker)
@@ -468,7 +479,6 @@ def fetch_all_stocks(watchlist):
                     ticker, data = future.result()
                     if data:
                         score, detailed = calculate_explosion_score(data)
-                        # Only keep stocks with score >= 40 to save memory
                         if score >= 40:
                             data['explosionScore'] = score
                             data['detailedScores'] = detailed
@@ -481,29 +491,38 @@ def fetch_all_stocks(watchlist):
                 progress_bar.progress(min(completed / total, 1.0))
                 status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#8892b0;">Scanning {completed}/{total} stocks · Batch {batch_idx+1}/{len(batches)} · Found {len(results)} candidates</div>', unsafe_allow_html=True)
 
-        # Pause between batches to avoid rate limits
-        if batch_idx < len(batches) - 1:
+        # Pause between batches
+        if batch_idx < len(batches) - 1 and not stopped:
             time.sleep(2)
 
-    # Retry top failed tickers (limit to 30 retries to save time)
-    retry_list = failed[:30]
-    if retry_list:
-        status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#ffd700;">Retrying {len(retry_list)} of {len(failed)} failed tickers...</div>', unsafe_allow_html=True)
-        for ticker in retry_list:
-            time.sleep(0.5)
-            try:
-                data = fetch_stock_data(ticker)
-                if data:
-                    score, detailed = calculate_explosion_score(data)
-                    if score >= 40:
-                        data['explosionScore'] = score
-                        data['detailedScores'] = detailed
-                        data['historicalMatch'] = detailed.get('historicalPattern', 0)
-                        results.append(data)
-            except: pass
+    # Track unscanned tickers
+    if stopped:
+        scanned_tickers = {r['ticker'] for r in results} | set(failed)
+        remaining = [t for t in watchlist if t not in scanned_tickers]
+        failed.extend(remaining)
+        status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#ffd700;">⏹️ Scan stopped — {completed}/{total} scanned · {len(results)} candidates found</div>', unsafe_allow_html=True)
+        time.sleep(2)
+    else:
+        # Retry top failed tickers
+        retry_list = failed[:30]
+        if retry_list:
+            status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#ffd700;">Retrying {len(retry_list)} of {len(failed)} failed tickers...</div>', unsafe_allow_html=True)
+            for ticker in retry_list:
+                time.sleep(0.5)
+                try:
+                    data = fetch_stock_data(ticker)
+                    if data:
+                        score, detailed = calculate_explosion_score(data)
+                        if score >= 40:
+                            data['explosionScore'] = score
+                            data['detailedScores'] = detailed
+                            data['historicalMatch'] = detailed.get('historicalPattern', 0)
+                            results.append(data)
+                            failed.remove(ticker)
+                except: pass
 
-    progress_bar.empty(); status_text.empty()
-    return results
+    progress_bar.empty(); status_text.empty(); stop_container.empty()
+    return results, failed
 
 
 # ============================================================
@@ -622,18 +641,20 @@ def main():
     should_scan = False
     last_scan = st.session_state.get('last_scan_time', None)
 
-    if st.button('🔄 Scan Now'):
+    if st.button('🔄 Scan Now', use_container_width=True):
         should_scan = True
-    elif last_scan is None:
+
+    if not should_scan and last_scan is None:
         should_scan = True
-    elif is_market_open():
+    elif not should_scan and is_market_open() and last_scan:
         elapsed = (datetime.now() - last_scan).total_seconds() / 60
         if elapsed >= SCAN_INTERVAL_MINUTES:
             should_scan = True
 
     if should_scan:
-        stocks_data = fetch_all_stocks(watchlist)
+        stocks_data, failed_tickers = fetch_all_stocks(watchlist)
         st.session_state['stocks_data'] = stocks_data
+        st.session_state['failed_tickers'] = failed_tickers
         st.session_state['last_scan_time'] = datetime.now()
         st.session_state['scan_count'] = st.session_state.get('scan_count', 0) + 1
 
@@ -663,6 +684,17 @@ def main():
     pre_explosion = sorted([s for s in stocks_data if not s['isExploding']], key=lambda x: x['explosionScore'], reverse=True)
     active_explosions = sorted([s for s in stocks_data if s['isExploding']], key=lambda x: x['dailyChangePct'], reverse=True)
 
+    # Stopped early indicator
+    failed_tickers = st.session_state.get('failed_tickers', [])
+    if st.session_state.get('scan_stopped', False) and len(stocks_data) > 0:
+        scanned_count = len(stocks_data) + len([f for f in failed_tickers if f not in [s['ticker'] for s in stocks_data]])
+        st.markdown(f'''
+        <div style="padding:10px 14px;border-radius:12px;margin-bottom:12px;font-size:0.75rem;text-align:center;
+            background:rgba(255,215,0,0.06);border:1px solid rgba(255,215,0,0.15);color:#ffd700;">
+            ⏹️ Scan stopped early — showing results from {len(stocks_data)} candidates found so far
+        </div>
+        ''', unsafe_allow_html=True)
+
     # Top alert
     if pre_explosion and pre_explosion[0]['explosionScore'] >= 60:
         top = pre_explosion[0]
@@ -687,6 +719,20 @@ def main():
             <div class="stat-label">Upcoming Catalysts</div><div class="stat-value" style="color:#ffd700;">{catalysts}</div>
             <div class="stat-sub">FDA · Earnings</div></div>
     </div>''', unsafe_allow_html=True)
+
+    # Failed tickers display
+    failed_tickers = st.session_state.get('failed_tickers', [])
+    if failed_tickers:
+        with st.expander(f'⚠️ Failed Tickers ({len(failed_tickers)} of {len(watchlist)})'):
+            st.markdown(f'''
+            <div style="font-size:0.75rem;color:#ff6b6b;margin-bottom:8px;">
+                These tickers failed to fetch data (yfinance rate limit or invalid ticker).
+                They will be retried on the next scan.
+            </div>
+            <div style="font-size:0.7rem;color:#8892b0;line-height:1.8;word-wrap:break-word;">
+                {', '.join(sorted(failed_tickers))}
+            </div>
+            ''', unsafe_allow_html=True)
 
     # Tabs
     tab1, tab2 = st.tabs(['🔭 Pre-Explosion', '🚀 Active Explosions'])
