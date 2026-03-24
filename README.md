@@ -1,9 +1,10 @@
 # 🎯 Explosion Hunter v3.0 — Railway Deployment Guide
 
 ## What This Does
-- **Auto-scans** 35+ stocks every 10 minutes during market hours
+- **Auto-scans 1,160 Halal NYSE stocks** every hour during market hours
 - **Email alerts** when any stock scores ≥ 70
 - **Live dashboard** auto-refreshes — no manual clicks
+- **Batch processing** to handle large watchlist without rate limits
 - **Runs 24/7** on Railway for ~$5/month
 
 ---
@@ -26,8 +27,9 @@
 1. Go to https://railway.app and sign up (credit card required for $5/month plan)
 2. Click **"New Project"** → **"Deploy from GitHub repo"**
    - If you don't want GitHub: Click **"Empty Project"** → **"Add a Service"** → **"Deploy a Template"** and upload the files manually
-3. Connect this repo or upload the 4 files:
+3. Connect this repo or upload the 5 files:
    - `app.py`
+   - `tickers.txt` (1,160 Halal NYSE tickers)
    - `requirements.txt`
    - `Procfile`
    - `.python-version`
@@ -42,7 +44,7 @@ In Railway dashboard → Your service → **Variables** tab → Add these:
 | `GMAIL_ADDRESS` | your-email@gmail.com |
 | `GMAIL_APP_PASSWORD` | abcdefghijklmnop (the 16-char app password from Step 1) |
 | `ALERT_TO_EMAIL` | your-email@gmail.com (where to receive alerts) |
-| `SCAN_INTERVAL` | 10 (minutes between scans) |
+| `SCAN_INTERVAL` | 60 (minutes between scans — hourly) |
 | `ALERT_THRESHOLD` | 70 (minimum score to trigger email) |
 
 ### Step 4: Generate Domain (1 min)
@@ -64,9 +66,11 @@ In Railway dashboard → Your service → **Variables** tab → Add these:
 ## How It Works
 
 ### During Market Hours (9:30 AM - 4:00 PM ET)
-- Dashboard auto-refreshes every 10 minutes
-- Scanner analyzes all stocks with 14 criteria
-- If any stock scores ≥ 70, you get an email
+- Dashboard auto-refreshes every hour
+- Scanner analyzes all 1,160 Halal NYSE stocks in batches of 50
+- Full scan takes ~15-20 minutes
+- Only stocks scoring ≥ 40 are shown on dashboard (filters out noise)
+- If any stock scores ≥ 70, you get an email alert
 - Emails are only sent for **NEW** triggers (not repeated)
 
 ### Outside Market Hours
