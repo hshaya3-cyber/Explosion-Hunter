@@ -664,15 +664,20 @@ def main():
     # Fetch data — auto or manual
     should_scan = False
     last_scan = st.session_state.get('last_scan_time', None)
+    has_data = len(st.session_state.get('stocks_data', [])) > 0
 
     if st.button('🔄 Scan Now', use_container_width=True):
+        st.session_state.pop('scan_was_stopped', None)
         should_scan = True
 
-    if not should_scan and last_scan is None:
+    # Only auto-scan if: no data yet AND not just stopped
+    if not should_scan and not has_data and not st.session_state.get('scan_was_stopped', False):
         should_scan = True
+    # Auto-rescan during market hours if interval elapsed
     elif not should_scan and is_market_open() and last_scan:
         elapsed = (datetime.now() - last_scan).total_seconds() / 60
         if elapsed >= SCAN_INTERVAL_MINUTES:
+            st.session_state.pop('scan_was_stopped', None)
             should_scan = True
 
     if should_scan:
