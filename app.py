@@ -261,20 +261,20 @@ def send_email_alert(triggered_stocks):
 
 
 # ============================================================
-# DATA FETCHING (with retry)
+# DATA FETCHING (with retry — no Streamlit cache to avoid SessionInfo errors)
 # ============================================================
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_stock_data(ticker, _retry=0):
-    try:
-        time.sleep(0.3)
-        stock = yf.Ticker(ticker)
-        info = stock.info or {}
-        hist = stock.history(period='6mo')
-        if hist.empty or len(hist) < 20:
-            if _retry < 2:
-                time.sleep(1)
-                return fetch_stock_data.__wrapped__(ticker, _retry=_retry+1)
-            return None
+def fetch_stock_data(ticker, max_retries=2):
+    for attempt in range(max_retries + 1):
+        try:
+            time.sleep(0.3)
+            stock = yf.Ticker(ticker)
+            info = stock.info or {}
+            hist = stock.history(period='6mo')
+            if hist.empty or len(hist) < 20:
+                if attempt < max_retries:
+                    time.sleep(1)
+                    continue
+                return None
         current_price = hist['Close'].iloc[-1]
         prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
         daily_change_pct = ((current_price - prev_close) / prev_close) * 100
@@ -365,11 +365,11 @@ def fetch_stock_data(ticker, _retry=0):
         insider_pct = info.get('heldPercentInsiders', 0) or 0; insider_buys_est = 1 if insider_pct > 0.1 else 0
         return {'ticker': ticker, 'name': info.get('shortName', ticker), 'exchange': info.get('exchange', 'N/A'), 'sector': sector, 'marketCap': cap_display, 'capCategory': cap_label, 'price': round(current_price, 2), 'prevClose': round(prev_close, 2), 'dailyChangePct': round(daily_change_pct, 2), 'low52': round(low_52, 2), 'high52': round(high_52, 2), 'pctFromLow': round(pct_from_low, 2), 'shortInterest': round(short_interest, 1), 'shortRatio': round(short_ratio, 1), 'rsi': round(current_rsi, 1), 'mfi': round(current_mfi, 1), 'volumeChange': round(volume_ratio, 0), 'avgVolume': avg_volume_20, 'currentVolume': current_volume, 'volumeMultiple': round(current_volume / avg_volume_20, 1) if avg_volume_20 > 0 else 1, 'volTrendRising': vol_trend_rising, 'catalyst': {'type': catalyst_type, 'label': catalyst_label, 'date': catalyst_date}, 'news': vol_trend_rising and volume_ratio > 200, 'ttmSqueeze': ttm_squeeze, 'squeezeBars': squeeze_bars, 'bollingerSqueeze': bollinger_squeeze, 'bbWidth': round(bb_width, 2), 'obvTrend': obv_trend, 'float': float_display, 'floatShares': float_shares, 'floatSmall': float_small, 'gapUpTarget': round(gap_up_target, 2) if gap_up_target else None, 'insiderBuys': insider_buys_est, 'insiderPct': round(insider_pct * 100, 1), 'isExploding': is_exploding}
     except:
-        if _retry < 2:
+        if attempt < max_retries:
             time.sleep(1.5)
-            try: return fetch_stock_data.__wrapped__(ticker, _retry=_retry+1)
-            except: pass
+            continue
         return None
+    return None
 
 
 def calculate_explosion_score(stock):
@@ -492,7 +492,6 @@ def fetch_all_stocks(watchlist):
         for ticker in retry_list:
             time.sleep(0.5)
             try:
-                fetch_stock_data.clear()
                 data = fetch_stock_data(ticker)
                 if data:
                     score, detailed = calculate_explosion_score(data)
@@ -633,7 +632,6 @@ def main():
             should_scan = True
 
     if should_scan:
-        fetch_stock_data.clear()
         stocks_data = fetch_all_stocks(watchlist)
         st.session_state['stocks_data'] = stocks_data
         st.session_state['last_scan_time'] = datetime.now()
