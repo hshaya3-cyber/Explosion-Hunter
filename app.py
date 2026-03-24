@@ -123,7 +123,7 @@ def should_auto_scan(tf_key):
         if last and last.date() == get_et_now().date(): return False
         return True
     if not is_market_open(): return False
-    if last is None: return True
+    if last is None: return False  # Require manual first scan — don't auto-start
     return (get_et_now() - last).total_seconds() / 60 >= tf['scan_every_min']
 
 def send_email_alert(stocks, tf_key):
@@ -350,10 +350,9 @@ def render_tab(tf_key, wl, manual=False):
     tf=TIMEFRAMES[tf_key]; dk=f'data_{tf_key}'
     has=len(st.session_state.get(dk,[]))>0; was=st.session_state.get(f'stopped_{tf_key}',False)
     do_scan=manual
-    if not do_scan and not has and not was:
-        if tf_key=='1d': do_scan=is_after_close()
-        else: do_scan=is_market_open()
-    if not do_scan and should_auto_scan(tf_key) and not was: do_scan=True
+    # Only auto-scan if interval elapsed (not on first load unless manual)
+    if not do_scan and not was and should_auto_scan(tf_key):
+        do_scan=True
     if do_scan:
         res,fail=scan_stocks(wl,tf_key)
         st.session_state[dk]=res; st.session_state[f'failed_{tf_key}']=fail; st.session_state[f'last_scan_{tf_key}']=get_et_now()
