@@ -1,9 +1,10 @@
 """
 🎯 Explosion Hunter v3.0 — Full Auto Mode
 ==========================================
-- Auto-scans every 10 minutes during market hours
+- Auto-scans 1,160 Halal NYSE stocks every hour during market hours
 - Email alerts when score >= 70
 - Dashboard auto-refreshes — no manual clicks needed
+- Batch processing with smart rate-limit handling
 - Deployed on Railway.app for 24/7 uptime
 """
 
@@ -31,7 +32,7 @@ warnings.filterwarnings('ignore')
 GMAIL_ADDRESS = os.environ.get('GMAIL_ADDRESS', '')
 GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
 ALERT_TO_EMAIL = os.environ.get('ALERT_TO_EMAIL', GMAIL_ADDRESS)
-SCAN_INTERVAL_MINUTES = int(os.environ.get('SCAN_INTERVAL', '10'))
+SCAN_INTERVAL_MINUTES = int(os.environ.get('SCAN_INTERVAL', '60'))
 ALERT_SCORE_THRESHOLD = int(os.environ.get('ALERT_THRESHOLD', '70'))
 
 # ============================================================
@@ -125,16 +126,23 @@ st.markdown('''
 
 
 # ============================================================
-# WATCHLIST
+# WATCHLIST — 1,160 Halal NYSE Stocks
 # ============================================================
-DEFAULT_WATCHLIST = [
-    'BNGO', 'GERN', 'CRSP', 'SAVA', 'DRUG', 'ACXP',
-    'NKLA', 'CLOV', 'WISH', 'GOEV', 'OPEN', 'DNA',
-    'IONQ', 'SMCI', 'RIVN', 'APLD', 'MARA', 'RIOT',
-    'UPST', 'SOFI', 'PLTR', 'AFRM', 'RKLB', 'LUNR',
-    'MULN', 'FFIE', 'SPCE',
-    'HIMS', 'ZETA', 'ADBE', 'TTD', 'UNH', 'OSCR', 'RARE', 'UP',
-]
+def load_watchlist():
+    """Load tickers from tickers.txt file"""
+    try:
+        import os
+        tickers_path = os.path.join(os.path.dirname(__file__), 'tickers.txt')
+        with open(tickers_path, 'r') as f:
+            content = f.read()
+        tickers = [t.strip() for t in content.split(',') if t.strip()]
+        return tickers
+    except:
+        # Fallback
+        return ['HIMS', 'ZETA', 'ADBE', 'TTD', 'UNH', 'OSCR', 'RARE', 'UP',
+                'SMCI', 'IONQ', 'RIVN', 'PLTR', 'SOFI', 'RKLB', 'MARA']
+
+DEFAULT_WATCHLIST = load_watchlist()
 
 
 # ============================================================
@@ -436,39 +444,65 @@ def calculate_explosion_score(stock):
 
 
 def fetch_all_stocks(watchlist):
-    results = []; failed = []; progress_bar = st.progress(0); status_text = st.empty()
+    """Fetch all stocks in batches to handle 1,160+ tickers without rate limits"""
+    results = []; failed = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     total = len(watchlist); completed = 0; lock = threading.Lock()
-    def fetch_one(ticker):
-        nonlocal completed; data = fetch_stock_data(ticker)
-        with lock: completed += 1
-        return (ticker, data)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_to_ticker = {executor.submit(fetch_one, t): t for t in watchlist}
-        for future in concurrent.futures.as_completed(future_to_ticker):
-            try:
-                ticker, data = future.result()
-                if data:
-                    score, detailed = calculate_explosion_score(data)
-                    data['explosionScore'] = score; data['detailedScores'] = detailed
-                    data['historicalMatch'] = detailed.get('historicalPattern', 0)
-                    results.append(data)
-                else: failed.append(ticker)
-            except: pass
-            progress_bar.progress(completed / total)
-            status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#8892b0;">Analyzing {completed}/{total} stocks...</div>', unsafe_allow_html=True)
-    if failed:
-        status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#ffd700;">Retrying {len(failed)} failed tickers...</div>', unsafe_allow_html=True)
-        for ticker in failed:
-            time.sleep(1)
+
+    # Process in batches of 50 to avoid rate limits
+    BATCH_SIZE = 50
+    batches = [watchlist[i:i+BATCH_SIZE] for i in range(0, len(watchlist), BATCH_SIZE)]
+
+    for batch_idx, batch in enumerate(batches):
+        def fetch_one(ticker):
+            nonlocal completed
+            data = fetch_stock_data(ticker)
+            with lock: completed += 1
+            return (ticker, data)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_to_ticker = {executor.submit(fetch_one, t): t for t in batch}
+            for future in concurrent.futures.as_completed(future_to_ticker):
+                try:
+                    ticker, data = future.result()
+                    if data:
+                        score, detailed = calculate_explosion_score(data)
+                        # Only keep stocks with score >= 40 to save memory
+                        if score >= 40:
+                            data['explosionScore'] = score
+                            data['detailedScores'] = detailed
+                            data['historicalMatch'] = detailed.get('historicalPattern', 0)
+                            results.append(data)
+                    else:
+                        failed.append(ticker)
+                except:
+                    pass
+                progress_bar.progress(min(completed / total, 1.0))
+                status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#8892b0;">Scanning {completed}/{total} stocks · Batch {batch_idx+1}/{len(batches)} · Found {len(results)} candidates</div>', unsafe_allow_html=True)
+
+        # Pause between batches to avoid rate limits
+        if batch_idx < len(batches) - 1:
+            time.sleep(2)
+
+    # Retry top failed tickers (limit to 30 retries to save time)
+    retry_list = failed[:30]
+    if retry_list:
+        status_text.markdown(f'<div style="text-align:center;font-size:0.75rem;color:#ffd700;">Retrying {len(retry_list)} of {len(failed)} failed tickers...</div>', unsafe_allow_html=True)
+        for ticker in retry_list:
+            time.sleep(0.5)
             try:
                 fetch_stock_data.clear()
                 data = fetch_stock_data(ticker)
                 if data:
                     score, detailed = calculate_explosion_score(data)
-                    data['explosionScore'] = score; data['detailedScores'] = detailed
-                    data['historicalMatch'] = detailed.get('historicalPattern', 0)
-                    results.append(data)
+                    if score >= 40:
+                        data['explosionScore'] = score
+                        data['detailedScores'] = detailed
+                        data['historicalMatch'] = detailed.get('historicalPattern', 0)
+                        results.append(data)
             except: pass
+
     progress_bar.empty(); status_text.empty()
     return results
 
@@ -533,7 +567,7 @@ def render_criteria_detail(stock):
 # ============================================================
 def main():
     # Header
-    st.markdown('<div class="main-header"><div style="font-size:2rem;">🎯</div><h1>Explosion Hunter</h1><div class="subtitle">Auto-Scanning · Live Alerts · 14 Criteria</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header"><div style="font-size:2rem;">🎯</div><h1>Explosion Hunter</h1><div class="subtitle">1,160 Halal Stocks · Auto-Scan Every Hour · Email Alerts</div></div>', unsafe_allow_html=True)
 
     # Market status
     status, status_detail, status_color = get_market_status()
@@ -558,9 +592,10 @@ def main():
         st.markdown(f'<div class="auto-status inactive">⏸️ Market closed — scanner paused · Next scan when market opens</div>', unsafe_allow_html=True)
 
     # Watchlist config
-    with st.expander('⚙️ Customize Watchlist'):
-        custom_tickers = st.text_area('Enter tickers (comma-separated)', value=', '.join(DEFAULT_WATCHLIST), height=100)
+    with st.expander(f'⚙️ Watchlist ({len(DEFAULT_WATCHLIST)} Halal NYSE stocks)'):
+        custom_tickers = st.text_area('Tickers (comma-separated)', value=', '.join(DEFAULT_WATCHLIST), height=150)
         watchlist = [t.strip().upper() for t in custom_tickers.split(',') if t.strip()]
+        st.markdown(f'<div style="font-size:0.7rem;color:#8892b0;">Total: {len(watchlist)} stocks · Scan takes ~15-20 min for full list</div>', unsafe_allow_html=True)
 
     # Email config status
     with st.expander('📧 Email Alert Status'):
