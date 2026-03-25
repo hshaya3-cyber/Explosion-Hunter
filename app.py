@@ -267,6 +267,7 @@ def scan_stocks(watchlist, tf_key):
                 st.session_state[f'data_{tf_key}']=results; st.session_state[f'failed_{tf_key}']=failed
                 st.session_state[f'last_scan_{tf_key}']=get_et_now(); st.session_state[f'dur_{tf_key}']=fmt_time(time.time()-t0)
                 st.session_state[f'stopped_{tf_key}']=True
+                st.session_state['scanning_active']=False; st.session_state.pop('scanning_tf',None)
                 pb.empty(); tt.empty(); st_.empty(); stop_c.empty(); st.rerun()
         def fetch_one(ticker):
             nonlocal done; d=fetch_stock_data(ticker,interval=tf['interval'],period=tf['period'])
@@ -349,24 +350,42 @@ def render_detail(s):
 def render_tab(tf_key, wl, manual=False):
     tf=TIMEFRAMES[tf_key]; dk=f'data_{tf_key}'
     has=len(st.session_state.get(dk,[]))>0; was=st.session_state.get(f'stopped_{tf_key}',False)
+
+    # Check if ANY scan is currently running — don't start another one
+    any_scanning = st.session_state.get('scanning_active', False)
+
     do_scan=manual
-    # Only auto-scan if interval elapsed (not on first load unless manual)
-    if not do_scan and not was and should_auto_scan(tf_key):
+    # Only auto-scan if interval elapsed AND no other scan is running
+    if not do_scan and not was and not any_scanning and should_auto_scan(tf_key):
         do_scan=True
+
     if do_scan:
+        st.session_state['scanning_active'] = True
+        st.session_state['scanning_tf'] = tf_key
         res,fail=scan_stocks(wl,tf_key)
-        st.session_state[dk]=res; st.session_state[f'failed_{tf_key}']=fail; st.session_state[f'last_scan_{tf_key}']=get_et_now()
+        # Save all metadata (also saved in stop handler, but this covers normal completion)
+        st.session_state[dk]=res; st.session_state[f'failed_{tf_key}']=fail
+        st.session_state[f'last_scan_{tf_key}']=get_et_now()
+        st.session_state['scanning_active'] = False
+        st.session_state.pop('scanning_tf', None)
         ec=bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
         if ec:
             trig=[s for s in res if s['explosionScore']>=ALERT_SCORE_THRESHOLD]
             if trig: send_email_alert(trig,tf_key); st.session_state[f'emails_{tf_key}']=st.session_state.get(f'emails_{tf_key}',0)+1
         st.rerun()
+
+    # Display results
     stocks=st.session_state.get(dk,[]); failed=st.session_state.get(f'failed_{tf_key}',[])
     ls=st.session_state.get(f'last_scan_{tf_key}'); dur=st.session_state.get(f'dur_{tf_key}','--:--')
     em=st.session_state.get(f'emails_{tf_key}',0)
-    ls_str=ls.strftime('%H:%M ET') if ls else 'Never'
+    ls_str=ls.strftime('%H:%M:%S ET') if ls else 'Never'
     sch='After close' if tf_key=='1d' else f'Every {tf["scan_every_min"]}min'
-    st.markdown(f'<div style="padding:8px 12px;border-radius:10px;background:rgba(0,210,190,0.04);border:1px solid rgba(0,210,190,0.1);margin-bottom:8px;font-size:0.72rem;"><span style="color:#00d2be;font-weight:700;">{tf["icon"]} {tf["label"]}</span> · Last: {ls_str} · ⏱️{dur} · Emails: {em} · <span style="color:#4a5568;">{sch}</span></div>',unsafe_allow_html=True)
+    # Show if currently scanning another timeframe
+    active_tf = st.session_state.get('scanning_tf')
+    busy_msg = ''
+    if active_tf and active_tf != tf_key:
+        busy_msg = f' · <span style="color:#ffd700;">⏳ {TIMEFRAMES[active_tf]["label"]} scan running</span>'
+    st.markdown(f'<div style="padding:8px 12px;border-radius:10px;background:rgba(0,210,190,0.04);border:1px solid rgba(0,210,190,0.1);margin-bottom:8px;font-size:0.72rem;"><span style="color:#00d2be;font-weight:700;">{tf["icon"]} {tf["label"]}</span> · Last: {ls_str} · ⏱️{dur} · Emails: {em} · <span style="color:#4a5568;">{sch}</span>{busy_msg}</div>',unsafe_allow_html=True)
     if not stocks: st.markdown(f'<div style="text-align:center;padding:20px;color:#8892b0;">No data yet — press scan or wait for auto-scan</div>',unsafe_allow_html=True); return
     ss=sorted(stocks,key=lambda x:x['explosionScore'],reverse=True); hc=len([s for s in ss if s['explosionScore']>=ALERT_SCORE_THRESHOLD])
     st.markdown(f'<div style="text-align:center;font-size:0.85rem;font-weight:700;color:#e6f1ff;margin:6px 0;">{len(ss)} candidates · {hc} alerts (≥{ALERT_SCORE_THRESHOLD})</div>',unsafe_allow_html=True)
