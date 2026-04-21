@@ -97,15 +97,20 @@ DEFAULT_WATCHLIST = load_watchlist()
 def get_et_now():
     return datetime.now(pytz.timezone('US/Eastern'))
 
+def get_ksa_now():
+    return datetime.now(pytz.timezone('Asia/Riyadh'))
+
 def is_market_open():
     n = get_et_now()
     if n.weekday() > 4: return False
     return n.replace(hour=9,minute=30,second=0) <= n <= n.replace(hour=16,minute=0,second=0)
 
-def is_after_close():
-    n = get_et_now()
-    if n.weekday() > 4: return False
-    return n.replace(hour=16,minute=15,second=0) <= n <= n.replace(hour=16,minute=45,second=0)
+def is_daily_scan_window():
+    """Check if we're in the daily auto-scan window: 3:00-3:30 AM KSA (Asia/Riyadh)"""
+    n = get_ksa_now()
+    # Skip weekends (Sat/Sun in KSA — but US market closes Fri, so daily scan runs Mon-Fri nights)
+    # 3:00 AM KSA on a weekday = after US market close the previous day
+    return n.replace(hour=3,minute=0,second=0) <= n <= n.replace(hour=3,minute=30,second=0)
 
 def get_market_status():
     n = get_et_now()
@@ -115,16 +120,29 @@ def get_market_status():
     elif n > mc: return "CLOSED","After hours","#ff6b6b"
     else: d=int((mc-n).total_seconds()/60); return "OPEN",f"Closes in {d//60}h {d%60}m","#00ff88"
 
+def get_next_daily_scan_str():
+    """Get a string showing when the next daily auto-scan will run"""
+    ksa = get_ksa_now()
+    if ksa.hour < 3:
+        return f"Today at 3:00 AM KSA ({(3 - ksa.hour - 1)}h {60 - ksa.minute}m)"
+    else:
+        return "Tomorrow at 3:00 AM KSA"
+
 def should_auto_scan(tf_key):
-    tf = TIMEFRAMES[tf_key]
+    # Only daily timeframe auto-scans (at 3:00 AM KSA)
+    # All other timeframes (30m, 1h, 4h) are manual only
+    if tf_key != '1d':
+        return False
+    if not is_daily_scan_window():
+        return False
     last = st.session_state.get(f'last_scan_{tf_key}')
-    if tf_key == '1d':
-        if not is_after_close(): return False
-        if last and last.date() == get_et_now().date(): return False
-        return True
-    if not is_market_open(): return False
-    if last is None: return False  # Require manual first scan — don't auto-start
-    return (get_et_now() - last).total_seconds() / 60 >= tf['scan_every_min']
+    if last:
+        # Don't scan again if already scanned today (KSA date)
+        ksa_now = get_ksa_now()
+        last_ksa = last.astimezone(pytz.timezone('Asia/Riyadh'))
+        if last_ksa.date() == ksa_now.date():
+            return False
+    return True
 
 def send_email_alert(stocks, tf_key):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False
@@ -379,7 +397,7 @@ def render_tab(tf_key, wl, manual=False):
     ls=st.session_state.get(f'last_scan_{tf_key}'); dur=st.session_state.get(f'dur_{tf_key}','--:--')
     em=st.session_state.get(f'emails_{tf_key}',0)
     ls_str=ls.strftime('%H:%M:%S ET') if ls else 'Never'
-    sch='After close' if tf_key=='1d' else f'Every {tf["scan_every_min"]}min'
+    sch='Auto at 3:00 AM KSA' if tf_key=='1d' else 'Manual only'
     # Show if currently scanning another timeframe
     active_tf = st.session_state.get('scanning_tf')
     busy_msg = ''
@@ -396,10 +414,13 @@ def render_tab(tf_key, wl, manual=False):
         with st.expander(f'🔍 {s["ticker"]}'): st.markdown(render_detail(s),unsafe_allow_html=True)
 
 def main():
-    st.markdown('<div class="main-header"><div style="font-size:2rem;">🎯</div><h1>Explosion Hunter</h1><div class="subtitle">Multi-Timeframe · 1,160 Halal Stocks · Auto Email Alerts</div></div>',unsafe_allow_html=True)
+    st.markdown('<div class="main-header"><div style="font-size:2rem;">🎯</div><h1>Explosion Hunter</h1><div class="subtitle">Multi-Timeframe · 1,160 Halal Stocks · Auto Daily Scan at 3AM KSA</div></div>',unsafe_allow_html=True)
     status,detail,color=get_market_status(); dc="live-dot" if status=="OPEN" else "live-dot off"
-    st.markdown(f'<div style="text-align:center;"><div class="live-badge"><div class="{dc}"></div><span style="color:{color};">{status}</span><span style="color:#8892b0;">{detail}</span><span style="color:#8892b0;">NYSE/NASDAQ</span></div></div>',unsafe_allow_html=True)
-    st.markdown(f'<div style="padding:10px 14px;border-radius:12px;background:rgba(0,255,136,0.03);border:1px solid rgba(0,255,136,0.1);margin:8px 0;font-size:0.72rem;"><div style="font-weight:700;color:#00ff88;margin-bottom:4px;">📡 Auto-Scan Schedule</div><div style="color:#8892b0;">⚡ <b>30min</b> every 30 min · ⏰ <b>1H</b> every hour · 📊 <b>4H</b> every 4 hours · 📅 <b>Daily</b> at 4:15 PM ET</div><div style="color:#4a5568;font-size:0.65rem;margin-top:2px;">1,160 stocks per scan · Email on Score≥{ALERT_SCORE_THRESHOLD} · Separate email per TF</div></div>',unsafe_allow_html=True)
+    ksa_str = get_ksa_now().strftime('%I:%M %p KSA')
+    et_str = get_et_now().strftime('%I:%M %p ET')
+    st.markdown(f'<div style="text-align:center;"><div class="live-badge"><div class="{dc}"></div><span style="color:{color};">{status}</span><span style="color:#8892b0;">{detail}</span><span style="color:#8892b0;">NYSE/NASDAQ</span></div><div style="font-size:0.7rem;color:#4a5568;margin-top:4px;">{ksa_str} · {et_str}</div></div>',unsafe_allow_html=True)
+    next_scan = get_next_daily_scan_str()
+    st.markdown(f'<div style="padding:10px 14px;border-radius:12px;background:rgba(0,255,136,0.03);border:1px solid rgba(0,255,136,0.1);margin:8px 0;font-size:0.72rem;"><div style="font-weight:700;color:#00ff88;margin-bottom:4px;">📡 Scan Schedule</div><div style="color:#8892b0;">📅 <b>Daily</b> auto-scan at <b>3:00 AM KSA</b> (after US market close)</div><div style="color:#8892b0;margin-top:2px;">⚡ 30min · ⏰ 1H · 📊 4H — <b>manual only</b> (use buttons below)</div><div style="color:#4a5568;font-size:0.65rem;margin-top:4px;">Next daily scan: {next_scan} · Email on Score≥{ALERT_SCORE_THRESHOLD}</div></div>',unsafe_allow_html=True)
     with st.expander(f'⚙️ Watchlist ({len(DEFAULT_WATCHLIST)} stocks)'):
         ct=st.text_area('Tickers',value=', '.join(DEFAULT_WATCHLIST),height=120)
         wl=[t.strip().upper() for t in ct.split(',') if t.strip()]
@@ -417,12 +438,15 @@ def main():
         if st.button('📊 4H',key='m4h',use_container_width=True): st.session_state.pop('stopped_4h',None); ms['4h']=True
     with c4:
         if st.button('📅 Daily',key='m1d',use_container_width=True): st.session_state.pop('stopped_1d',None); ms['1d']=True
-    t1,t2,t3,t4=st.tabs(['⚡ 30min','⏰ 1 Hour','📊 4 Hours','📅 Daily'])
-    with t1: render_tab('30m',wl,ms.get('30m',False))
-    with t2: render_tab('1h',wl,ms.get('1h',False))
-    with t3: render_tab('4h',wl,ms.get('4h',False))
-    with t4: render_tab('1d',wl,ms.get('1d',False))
+    t1,t2,t3,t4=st.tabs(['📅 Daily','⚡ 30min','⏰ 1 Hour','📊 4 Hours'])
+    with t1: render_tab('1d',wl,ms.get('1d',False))
+    with t2: render_tab('30m',wl,ms.get('30m',False))
+    with t3: render_tab('1h',wl,ms.get('1h',False))
+    with t4: render_tab('4h',wl,ms.get('4h',False))
     st.markdown('<div class="disclaimer">⚠️ For educational purposes only. Not financial advice. Trading involves high risk.</div>',unsafe_allow_html=True)
-    if is_market_open() or is_after_close(): st.markdown('<meta http-equiv="refresh" content="300">',unsafe_allow_html=True)
+    # Auto-refresh every 5 minutes ONLY during the daily scan window (2:55-3:30 AM KSA)
+    ksa_h = get_ksa_now().hour
+    if ksa_h == 2 and get_ksa_now().minute >= 55 or ksa_h == 3 and get_ksa_now().minute <= 30:
+        st.markdown('<meta http-equiv="refresh" content="300">',unsafe_allow_html=True)
 
 if __name__=='__main__': main()
