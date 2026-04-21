@@ -429,17 +429,25 @@ def render_tab(tf_key, wl, manual=False):
         st.session_state['scanning_active'] = False
         st.session_state.pop('scanning_tf', None)
         ec=bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
-        if ec:
-            dur = st.session_state.get(f'dur_{tf_key}', '--:--')
-            failed_count = len(st.session_state.get(f'failed_{tf_key}', []))
-            # Always send scan summary email (top 20 stocks)
-            send_scan_summary(res, failed_count, tf_key, dur)
-            st.session_state[f'emails_{tf_key}'] = st.session_state.get(f'emails_{tf_key}', 0) + 1
-            # Also send separate alert email if any stocks hit threshold
-            trig = [s for s in res if s['explosionScore'] >= ALERT_SCORE_THRESHOLD]
-            if trig:
-                send_email_alert(trig, tf_key)
-                st.session_state[f'emails_{tf_key}'] = st.session_state.get(f'emails_{tf_key}', 0) + 1
+        email_status = ''
+        if ec and res:
+            try:
+                dur = st.session_state.get(f'dur_{tf_key}', '--:--')
+                failed_count = len(fail)
+                ok1 = send_scan_summary(res, failed_count, tf_key, dur)
+                if ok1:
+                    st.session_state[f'emails_{tf_key}'] = st.session_state.get(f'emails_{tf_key}', 0) + 1
+                    email_status = 'summary_sent'
+                else:
+                    email_status = 'summary_failed'
+                trig = [s for s in res if s['explosionScore'] >= ALERT_SCORE_THRESHOLD]
+                if trig:
+                    ok2 = send_email_alert(trig, tf_key)
+                    if ok2:
+                        st.session_state[f'emails_{tf_key}'] = st.session_state.get(f'emails_{tf_key}', 0) + 1
+            except Exception as e:
+                email_status = f'error: {str(e)[:100]}'
+        st.session_state[f'email_status_{tf_key}'] = email_status
         st.rerun()
 
     # Display results
@@ -454,6 +462,14 @@ def render_tab(tf_key, wl, manual=False):
     if active_tf and active_tf != tf_key:
         busy_msg = f' · <span style="color:#ffd700;">⏳ {TIMEFRAMES[active_tf]["label"]} scan running</span>'
     st.markdown(f'<div style="padding:8px 12px;border-radius:10px;background:rgba(0,210,190,0.04);border:1px solid rgba(0,210,190,0.1);margin-bottom:8px;font-size:0.72rem;"><span style="color:#00d2be;font-weight:700;">{tf["icon"]} {tf["label"]}</span> · Last: {ls_str} · ⏱️{dur} · Emails: {em} · <span style="color:#4a5568;">{sch}</span>{busy_msg}</div>',unsafe_allow_html=True)
+    # Show email status
+    e_status = st.session_state.get(f'email_status_{tf_key}', '')
+    if e_status == 'summary_sent':
+        st.markdown('<div style="font-size:0.7rem;color:#00ff88;text-align:center;margin-bottom:6px;">✅ Email sent successfully</div>',unsafe_allow_html=True)
+    elif e_status == 'summary_failed':
+        st.markdown('<div style="font-size:0.7rem;color:#ff6b6b;text-align:center;margin-bottom:6px;">❌ Email failed — check Gmail App Password</div>',unsafe_allow_html=True)
+    elif e_status.startswith('error:'):
+        st.markdown(f'<div style="font-size:0.7rem;color:#ff6b6b;text-align:center;margin-bottom:6px;">❌ {e_status}</div>',unsafe_allow_html=True)
     if not stocks: st.markdown(f'<div style="text-align:center;padding:20px;color:#8892b0;">No data yet — press scan or wait for auto-scan</div>',unsafe_allow_html=True); return
     ss=sorted(stocks,key=lambda x:x['explosionScore'],reverse=True); hc=len([s for s in ss if s['explosionScore']>=ALERT_SCORE_THRESHOLD])
     st.markdown(f'<div style="text-align:center;font-size:0.85rem;font-weight:700;color:#e6f1ff;margin:6px 0;">{len(ss)} candidates · {hc} alerts (≥{ALERT_SCORE_THRESHOLD})</div>',unsafe_allow_html=True)
