@@ -165,7 +165,7 @@ def send_email_alert(stocks, tf_key):
     tf = TIMEFRAMES[tf_key]
     ksa_str = get_ksa_now().strftime('%I:%M %p KSA')
     et_str = get_et_now().strftime('%I:%M %p ET')
-    subj = f"🎯 {tf['icon']} {tf['label']} Alert: {len(stocks)} Stocks (Score≥{ALERT_SCORE_THRESHOLD}) — {ksa_str}"
+    subj = f"[Explosion Hunter] {tf['label']} Alert: {len(stocks)} Stocks (Score {ALERT_SCORE_THRESHOLD}+) - {ksa_str}"
     body = f'<div style="font-family:Arial;max-width:600px;margin:0 auto;background:#0d1b2a;color:#e6f1ff;padding:20px;border-radius:12px;"><h2 style="color:#00d2be;text-align:center;">🎯 {tf["label"]} Scan Results</h2><p style="color:#8892b0;text-align:center;">{ksa_str} ({et_str}) · {len(stocks)} stocks · Score≥{ALERT_SCORE_THRESHOLD}</p><hr style="border-color:rgba(0,210,190,0.2);">'
     for i,s in enumerate(stocks,1):
         sc = '#00ff88' if s['explosionScore']>=85 else '#00d2be' if s['explosionScore']>=70 else '#ffd700'
@@ -180,7 +180,7 @@ def send_scan_summary(all_stocks, failed_count, tf_key, duration):
     et_str = get_et_now().strftime('%I:%M %p ET')
     top_stocks = sorted(all_stocks, key=lambda x: x['explosionScore'], reverse=True)[:20]
     alerts = [s for s in all_stocks if s['explosionScore'] >= ALERT_SCORE_THRESHOLD]
-    subj = f"🎯 {tf['icon']} {tf['label']} Scan Complete — {len(all_stocks)} candidates · {len(alerts)} alerts — {ksa_str}"
+    subj = f"[Explosion Hunter] {tf['label']} Scan Complete - {len(all_stocks)} candidates, {len(alerts)} alerts - {ksa_str}"
     body = f'<div style="font-family:Arial;max-width:600px;margin:0 auto;background:#0d1b2a;color:#e6f1ff;padding:20px;border-radius:12px;"><h2 style="color:#00d2be;text-align:center;">🎯 {tf["label"]} Scan Summary</h2><p style="color:#8892b0;text-align:center;">{ksa_str} ({et_str})</p>'
     body += f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:15px 0;"><div style="text-align:center;padding:10px;border-radius:10px;background:rgba(0,210,190,0.08);"><div style="font-size:11px;color:#8892b0;">Candidates</div><div style="font-size:24px;font-weight:800;color:#00d2be;">{len(all_stocks)}</div></div><div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,107,107,0.08);"><div style="font-size:11px;color:#8892b0;">Alerts (≥{ALERT_SCORE_THRESHOLD})</div><div style="font-size:24px;font-weight:800;color:#ff6b6b;">{len(alerts)}</div></div><div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,215,0,0.08);"><div style="font-size:11px;color:#8892b0;">Failed</div><div style="font-size:24px;font-weight:800;color:#ffd700;">{failed_count}</div></div></div>'
     body += f'<div style="font-size:12px;color:#8892b0;text-align:center;margin-bottom:10px;">Duration: ⏱️ {duration}</div><hr style="border-color:rgba(0,210,190,0.2);"><h3 style="color:#00d2be;font-size:14px;margin:10px 0;">Top 20 by Score:</h3>'
