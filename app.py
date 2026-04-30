@@ -144,8 +144,35 @@ def should_auto_scan(tf_key):
             return False
     return True
 
+def _send_gmail(subject, html_body):
+    """Send email via Gmail with SSL, fallback to TLS"""
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        return False, "Gmail not configured"
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = GMAIL_ADDRESS
+    msg['To'] = ALERT_TO_EMAIL
+    msg.attach(MIMEText(html_body, 'html'))
+    # Try SSL first (port 465)
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as srv:
+            srv.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            srv.send_message(msg)
+        return True, "sent via SSL"
+    except Exception as e1:
+        pass
+    # Fallback: TLS (port 587)
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587, timeout=30) as srv:
+            srv.starttls()
+            srv.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            srv.send_message(msg)
+        return True, "sent via TLS"
+    except Exception as e2:
+        return False, f"SSL: {str(e1)[:80]} | TLS: {str(e2)[:80]}"
+
 def send_email_alert(stocks, tf_key):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False, "not configured"
     tf = TIMEFRAMES[tf_key]; now_str = get_et_now().strftime('%I:%M %p ET')
     ksa_str = get_ksa_now().strftime('%I:%M %p KSA')
     subj = f"🎯 {tf['icon']} {tf['label']} Alert: {len(stocks)} Stocks (Score≥{ALERT_SCORE_THRESHOLD}) — {ksa_str}"
@@ -154,16 +181,10 @@ def send_email_alert(stocks, tf_key):
         sc = '#00ff88' if s['explosionScore']>=85 else '#00d2be' if s['explosionScore']>=70 else '#ffd700'
         body += f'<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(0,210,190,0.15);border-radius:12px;padding:14px;margin:10px 0;"><div style="display:flex;justify-content:space-between;align-items:center;"><div><span style="font-size:11px;color:#8892b0;">#{i}</span><span style="font-size:24px;font-weight:800;color:{sc};margin-left:6px;">{s["explosionScore"]}</span></div><div style="text-align:right;"><div style="font-size:20px;font-weight:800;color:#00d2be;">{s["ticker"]}</div><div style="font-size:12px;color:#8892b0;">{s["name"]} · {s["capCategory"]}</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:10px;"><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">Price</div><div style="font-size:14px;font-weight:700;color:#00ff88;">${s["price"]}</div></div><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">Short%</div><div style="font-size:14px;font-weight:700;color:#ff4444;">{s["shortInterest"]}%</div></div><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">Vol</div><div style="font-size:14px;font-weight:700;color:#ff8800;">+{s["volumeChange"]:.0f}%</div></div><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">RSI</div><div style="font-size:14px;font-weight:700;">{s["rsi"]}</div></div></div><div style="margin-top:8px;font-size:11px;color:#8892b0;">Pattern:{s["historicalMatch"]}% · MFI:{s["mfi"]}{"· Squeeze("+str(s["squeezeBars"])+")" if s["ttmSqueeze"] else ""}</div></div>'
     body += '<hr style="border-color:rgba(0,210,190,0.2);"><p style="color:#4a5568;font-size:11px;text-align:center;">⚠️ Not financial advice.</p></div>'
-    try:
-        msg = MIMEMultipart('alternative'); msg['Subject']=subj; msg['From']=GMAIL_ADDRESS; msg['To']=ALERT_TO_EMAIL
-        msg.attach(MIMEText(body,'html'))
-        with smtplib.SMTP_SSL('smtp.gmail.com',465) as srv: srv.login(GMAIL_ADDRESS,GMAIL_APP_PASSWORD); srv.send_message(msg)
-        return True
-    except Exception as e: print(f"Email err: {e}"); return False
+    return _send_gmail(subj, body)
 
 def send_scan_summary(all_stocks, failed_count, tf_key, duration):
-    """Always send a summary email after daily scan, even if no stocks hit threshold"""
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False, "not configured"
     tf = TIMEFRAMES[tf_key]
     ksa_str = get_ksa_now().strftime('%I:%M %p KSA')
     et_str = get_et_now().strftime('%I:%M %p ET')
@@ -183,24 +204,9 @@ def send_scan_summary(all_stocks, failed_count, tf_key, duration):
         <h3 style="color:#00d2be;font-size:14px;margin:10px 0;">Top 20 Stocks by Score:</h3>'''
     for i,s in enumerate(top_stocks,1):
         sc = '#00ff88' if s['explosionScore']>=85 else '#00d2be' if s['explosionScore']>=70 else '#ffd700' if s['explosionScore']>=55 else '#8892b0'
-        body += f'''<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;margin:4px 0;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);">
-            <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:11px;color:#4a5568;">#{i}</span>
-                <span style="font-size:16px;font-weight:800;color:#00d2be;">{s['ticker']}</span>
-                <span style="font-size:11px;color:#8892b0;">{s['name']}</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:12px;">
-                <span style="font-size:11px;color:#8892b0;">${s['price']} · SI:{s['shortInterest']}% · RSI:{s['rsi']}</span>
-                <span style="font-size:18px;font-weight:800;color:{sc};">{s['explosionScore']}</span>
-            </div>
-        </div>'''
+        body += f'<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;margin:4px 0;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);"><div style="display:flex;align-items:center;gap:8px;"><span style="font-size:11px;color:#4a5568;">#{i}</span><span style="font-size:16px;font-weight:800;color:#00d2be;">{s["ticker"]}</span><span style="font-size:11px;color:#8892b0;">{s["name"]}</span></div><div style="display:flex;align-items:center;gap:12px;"><span style="font-size:11px;color:#8892b0;">${s["price"]} · SI:{s["shortInterest"]}% · RSI:{s["rsi"]}</span><span style="font-size:18px;font-weight:800;color:{sc};">{s["explosionScore"]}</span></div></div>'
     body += '<hr style="border-color:rgba(0,210,190,0.2);"><p style="color:#4a5568;font-size:11px;text-align:center;">⚠️ Not financial advice. Full results at hunter.up.railway.app</p></div>'
-    try:
-        msg = MIMEMultipart('alternative'); msg['Subject']=subj; msg['From']=GMAIL_ADDRESS; msg['To']=ALERT_TO_EMAIL
-        msg.attach(MIMEText(body,'html'))
-        with smtplib.SMTP_SSL('smtp.gmail.com',465) as srv: srv.login(GMAIL_ADDRESS,GMAIL_APP_PASSWORD); srv.send_message(msg)
-        return True
-    except Exception as e: print(f"Email err: {e}"); return False
+    return _send_gmail(subj, body)
 
 def fetch_stock_data(ticker, interval='1d', period='1y', max_retries=2):
     for attempt in range(max_retries+1):
@@ -420,35 +426,44 @@ def render_tab(tf_key, wl, manual=False):
         do_scan=True
 
     if do_scan:
-        st.session_state['scanning_active'] = True
-        st.session_state['scanning_tf'] = tf_key
-        res,fail=scan_stocks(wl,tf_key)
-        # Save all metadata (also saved in stop handler, but this covers normal completion)
-        st.session_state[dk]=res; st.session_state[f'failed_{tf_key}']=fail
-        st.session_state[f'last_scan_{tf_key}']=get_et_now()
-        st.session_state['scanning_active'] = False
-        st.session_state.pop('scanning_tf', None)
-        ec=bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
-        email_status = ''
-        if ec and res:
-            try:
-                dur = st.session_state.get(f'dur_{tf_key}', '--:--')
-                failed_count = len(fail)
-                ok1 = send_scan_summary(res, failed_count, tf_key, dur)
-                if ok1:
-                    st.session_state[f'emails_{tf_key}'] = st.session_state.get(f'emails_{tf_key}', 0) + 1
-                    email_status = 'summary_sent'
-                else:
-                    email_status = 'summary_failed'
-                trig = [s for s in res if s['explosionScore'] >= ALERT_SCORE_THRESHOLD]
-                if trig:
-                    ok2 = send_email_alert(trig, tf_key)
-                    if ok2:
+        try:
+            st.session_state['scanning_active'] = True
+            st.session_state['scanning_tf'] = tf_key
+            res,fail=scan_stocks(wl,tf_key)
+            st.session_state[dk]=res; st.session_state[f'failed_{tf_key}']=fail
+            st.session_state[f'last_scan_{tf_key}']=get_et_now()
+            st.session_state['scanning_active'] = False
+            st.session_state.pop('scanning_tf', None)
+            ec=bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
+            email_status = ''
+            if ec and res:
+                try:
+                    dur = st.session_state.get(f'dur_{tf_key}', '--:--')
+                    failed_count = len(fail)
+                    ok1, msg1 = send_scan_summary(res, failed_count, tf_key, dur)
+                    if ok1:
                         st.session_state[f'emails_{tf_key}'] = st.session_state.get(f'emails_{tf_key}', 0) + 1
-            except Exception as e:
-                email_status = f'error: {str(e)[:100]}'
-        st.session_state[f'email_status_{tf_key}'] = email_status
+                        email_status = f'sent ({msg1})'
+                    else:
+                        email_status = f'failed: {msg1}'
+                    trig = [s for s in res if s['explosionScore'] >= ALERT_SCORE_THRESHOLD]
+                    if trig:
+                        ok2, msg2 = send_email_alert(trig, tf_key)
+                        if ok2:
+                            st.session_state[f'emails_{tf_key}'] = st.session_state.get(f'emails_{tf_key}', 0) + 1
+                except Exception as e:
+                    email_status = f'crash: {str(e)[:150]}'
+            st.session_state[f'email_status_{tf_key}'] = email_status
+        except Exception as e:
+            st.session_state['scanning_active'] = False
+            st.session_state.pop('scanning_tf', None)
+            st.session_state[f'scan_error_{tf_key}'] = str(e)[:200]
         st.rerun()
+
+    # Show scan error if any
+    scan_err = st.session_state.get(f'scan_error_{tf_key}', '')
+    if scan_err:
+        st.markdown(f'<div style="padding:10px;border-radius:10px;background:rgba(255,68,68,0.1);border:1px solid rgba(255,68,68,0.3);margin-bottom:8px;font-size:0.75rem;color:#ff6b6b;">❌ Scan Error: {scan_err}</div>',unsafe_allow_html=True)
 
     # Display results
     stocks=st.session_state.get(dk,[]); failed=st.session_state.get(f'failed_{tf_key}',[])
@@ -464,12 +479,11 @@ def render_tab(tf_key, wl, manual=False):
     st.markdown(f'<div style="padding:8px 12px;border-radius:10px;background:rgba(0,210,190,0.04);border:1px solid rgba(0,210,190,0.1);margin-bottom:8px;font-size:0.72rem;"><span style="color:#00d2be;font-weight:700;">{tf["icon"]} {tf["label"]}</span> · Last: {ls_str} · ⏱️{dur} · Emails: {em} · <span style="color:#4a5568;">{sch}</span>{busy_msg}</div>',unsafe_allow_html=True)
     # Show email status
     e_status = st.session_state.get(f'email_status_{tf_key}', '')
-    if e_status == 'summary_sent':
-        st.markdown('<div style="font-size:0.7rem;color:#00ff88;text-align:center;margin-bottom:6px;">✅ Email sent successfully</div>',unsafe_allow_html=True)
-    elif e_status == 'summary_failed':
-        st.markdown('<div style="font-size:0.7rem;color:#ff6b6b;text-align:center;margin-bottom:6px;">❌ Email failed — check Gmail App Password</div>',unsafe_allow_html=True)
-    elif e_status.startswith('error:'):
-        st.markdown(f'<div style="font-size:0.7rem;color:#ff6b6b;text-align:center;margin-bottom:6px;">❌ {e_status}</div>',unsafe_allow_html=True)
+    if e_status:
+        if 'sent' in e_status:
+            st.markdown(f'<div style="font-size:0.7rem;color:#00ff88;text-align:center;margin-bottom:6px;">✅ {e_status}</div>',unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div style="font-size:0.7rem;color:#ff6b6b;text-align:center;margin-bottom:6px;word-break:break-all;">❌ {e_status}</div>',unsafe_allow_html=True)
     if not stocks: st.markdown(f'<div style="text-align:center;padding:20px;color:#8892b0;">No data yet — press scan or wait for auto-scan</div>',unsafe_allow_html=True); return
     ss=sorted(stocks,key=lambda x:x['explosionScore'],reverse=True); hc=len([s for s in ss if s['explosionScore']>=ALERT_SCORE_THRESHOLD])
     st.markdown(f'<div style="text-align:center;font-size:0.85rem;font-weight:700;color:#e6f1ff;margin:6px 0;">{len(ss)} candidates · {hc} alerts (≥{ALERT_SCORE_THRESHOLD})</div>',unsafe_allow_html=True)
@@ -497,9 +511,11 @@ def main():
             st.markdown(f'<div style="font-size:0.75rem;color:#8892b0;margin-top:4px;">Alert threshold: Score ≥ {ALERT_SCORE_THRESHOLD}</div>',unsafe_allow_html=True)
             if st.button('📧 Send Test Email', key='test_email', use_container_width=True):
                 test = [{'ticker':'TEST','name':'Test Alert','capCategory':'Test','marketCap':'$0','price':10.0,'shortInterest':25.0,'volumeChange':500,'rsi':35.0,'mfi':28.0,'catalyst':{'type':'FDA','label':'Test Event','date':'Now'},'historicalMatch':85,'explosionScore':85,'ttmSqueeze':True,'squeezeBars':8,'low52':8.0,'high52':15.0,'pctFromLow':25.0,'shortRatio':5.0,'bbWidth':5.0,'obvTrend':'Bullish','float':'10M','floatShares':10e6,'floatSmall':True,'gapUpTarget':None,'insiderBuys':1,'insiderPct':5.0,'isExploding':False,'prevClose':9.5,'dailyChangePct':5.3,'avgVolume':1e6,'currentVolume':6e6,'volumeMultiple':6.0,'volTrendRising':True,'bollingerSqueeze':True,'news':True,'exchange':'TEST','sector':'biotech','detailedScores':{}}]
-                ok = send_email_alert(test, '1d')
-                if ok: st.success('✅ Test email sent! Check your inbox.')
-                else: st.error('❌ Failed. Check Gmail App Password in Railway Variables.')
+                ok, msg = send_email_alert(test, '1d')
+                if ok:
+                    st.success(f'✅ Email sent! ({msg}) — Check inbox of {ALERT_TO_EMAIL}')
+                else:
+                    st.error(f'❌ Failed: {msg}')
         else: st.markdown('<div style="font-size:0.8rem;color:#ff6b6b;">⚠️ Set GMAIL_ADDRESS & GMAIL_APP_PASSWORD in Railway</div>',unsafe_allow_html=True)
     st.markdown('<div style="font-size:0.8rem;font-weight:700;color:#e6f1ff;margin:8px 0;">Manual Scan:</div>',unsafe_allow_html=True)
     c1,c2,c3,c4=st.columns(4); ms={}
