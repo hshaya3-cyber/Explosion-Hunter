@@ -20,15 +20,13 @@ import warnings
 import time
 import concurrent.futures
 import threading
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import os
 
 warnings.filterwarnings('ignore')
 
-GMAIL_ADDRESS = os.environ.get('GMAIL_ADDRESS', '')
-GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
+import requests
+
+GMAIL_WEBHOOK_URL = os.environ.get('GMAIL_WEBHOOK_URL', '')
 ALERT_TO_EMAIL = os.environ.get('ALERT_TO_EMAIL', 'hshaya3@gmail.com')
 ALERT_SCORE_THRESHOLD = int(os.environ.get('ALERT_THRESHOLD', '70'))
 
@@ -144,72 +142,53 @@ def should_auto_scan(tf_key):
             return False
     return True
 
-def _send_gmail(subject, html_body):
-    """Send email via Gmail with SSL, fallback to TLS"""
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        return False, "Gmail not configured"
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = GMAIL_ADDRESS
-    msg['To'] = ALERT_TO_EMAIL
-    msg.attach(MIMEText(html_body, 'html'))
-    ssl_err = ""
-    tls_err = ""
-    # Try SSL first (port 465)
+def _send_email(subject, html_body):
+    """Send email via Google Apps Script webhook (HTTPS — no SMTP needed)"""
+    if not GMAIL_WEBHOOK_URL:
+        return False, "Webhook URL not configured"
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as srv:
-            srv.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            srv.send_message(msg)
-        return True, "sent via SSL"
+        resp = requests.post(
+            GMAIL_WEBHOOK_URL,
+            json={"to": ALERT_TO_EMAIL, "subject": subject, "html": html_body},
+            timeout=30
+        )
+        result = resp.json()
+        if result.get('status') == 'ok':
+            return True, "sent"
+        else:
+            return False, result.get('message', 'Unknown error')[:100]
     except Exception as e:
-        ssl_err = str(e)[:80]
-    # Fallback: TLS (port 587)
-    try:
-        with smtplib.SMTP('smtp.gmail.com', 587, timeout=30) as srv:
-            srv.starttls()
-            srv.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            srv.send_message(msg)
-        return True, "sent via TLS"
-    except Exception as e:
-        tls_err = str(e)[:80]
-    return False, f"SSL: {ssl_err} | TLS: {tls_err}"
+        return False, str(e)[:100]
 
 def send_email_alert(stocks, tf_key):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False, "not configured"
-    tf = TIMEFRAMES[tf_key]; now_str = get_et_now().strftime('%I:%M %p ET')
+    if not GMAIL_WEBHOOK_URL: return False, "not configured"
+    tf = TIMEFRAMES[tf_key]
     ksa_str = get_ksa_now().strftime('%I:%M %p KSA')
+    et_str = get_et_now().strftime('%I:%M %p ET')
     subj = f"🎯 {tf['icon']} {tf['label']} Alert: {len(stocks)} Stocks (Score≥{ALERT_SCORE_THRESHOLD}) — {ksa_str}"
-    body = f'<div style="font-family:Arial;max-width:600px;margin:0 auto;background:#0d1b2a;color:#e6f1ff;padding:20px;border-radius:12px;"><h2 style="color:#00d2be;text-align:center;">🎯 {tf["label"]} Scan Results</h2><p style="color:#8892b0;text-align:center;">{ksa_str} ({now_str}) · {len(stocks)} stocks · Score≥{ALERT_SCORE_THRESHOLD}</p><hr style="border-color:rgba(0,210,190,0.2);">'
+    body = f'<div style="font-family:Arial;max-width:600px;margin:0 auto;background:#0d1b2a;color:#e6f1ff;padding:20px;border-radius:12px;"><h2 style="color:#00d2be;text-align:center;">🎯 {tf["label"]} Scan Results</h2><p style="color:#8892b0;text-align:center;">{ksa_str} ({et_str}) · {len(stocks)} stocks · Score≥{ALERT_SCORE_THRESHOLD}</p><hr style="border-color:rgba(0,210,190,0.2);">'
     for i,s in enumerate(stocks,1):
         sc = '#00ff88' if s['explosionScore']>=85 else '#00d2be' if s['explosionScore']>=70 else '#ffd700'
         body += f'<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(0,210,190,0.15);border-radius:12px;padding:14px;margin:10px 0;"><div style="display:flex;justify-content:space-between;align-items:center;"><div><span style="font-size:11px;color:#8892b0;">#{i}</span><span style="font-size:24px;font-weight:800;color:{sc};margin-left:6px;">{s["explosionScore"]}</span></div><div style="text-align:right;"><div style="font-size:20px;font-weight:800;color:#00d2be;">{s["ticker"]}</div><div style="font-size:12px;color:#8892b0;">{s["name"]} · {s["capCategory"]}</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:10px;"><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">Price</div><div style="font-size:14px;font-weight:700;color:#00ff88;">${s["price"]}</div></div><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">Short%</div><div style="font-size:14px;font-weight:700;color:#ff4444;">{s["shortInterest"]}%</div></div><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">Vol</div><div style="font-size:14px;font-weight:700;color:#ff8800;">+{s["volumeChange"]:.0f}%</div></div><div style="text-align:center;"><div style="font-size:10px;color:#8892b0;">RSI</div><div style="font-size:14px;font-weight:700;">{s["rsi"]}</div></div></div><div style="margin-top:8px;font-size:11px;color:#8892b0;">Pattern:{s["historicalMatch"]}% · MFI:{s["mfi"]}{"· Squeeze("+str(s["squeezeBars"])+")" if s["ttmSqueeze"] else ""}</div></div>'
     body += '<hr style="border-color:rgba(0,210,190,0.2);"><p style="color:#4a5568;font-size:11px;text-align:center;">⚠️ Not financial advice.</p></div>'
-    return _send_gmail(subj, body)
+    return _send_email(subj, body)
 
 def send_scan_summary(all_stocks, failed_count, tf_key, duration):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False, "not configured"
+    if not GMAIL_WEBHOOK_URL: return False, "not configured"
     tf = TIMEFRAMES[tf_key]
     ksa_str = get_ksa_now().strftime('%I:%M %p KSA')
     et_str = get_et_now().strftime('%I:%M %p ET')
     top_stocks = sorted(all_stocks, key=lambda x: x['explosionScore'], reverse=True)[:20]
     alerts = [s for s in all_stocks if s['explosionScore'] >= ALERT_SCORE_THRESHOLD]
     subj = f"🎯 {tf['icon']} {tf['label']} Scan Complete — {len(all_stocks)} candidates · {len(alerts)} alerts — {ksa_str}"
-    body = f'''<div style="font-family:Arial;max-width:600px;margin:0 auto;background:#0d1b2a;color:#e6f1ff;padding:20px;border-radius:12px;">
-        <h2 style="color:#00d2be;text-align:center;">🎯 {tf['label']} Scan Summary</h2>
-        <p style="color:#8892b0;text-align:center;">{ksa_str} ({et_str})</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:15px 0;">
-            <div style="text-align:center;padding:10px;border-radius:10px;background:rgba(0,210,190,0.08);"><div style="font-size:11px;color:#8892b0;">Candidates</div><div style="font-size:24px;font-weight:800;color:#00d2be;">{len(all_stocks)}</div></div>
-            <div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,107,107,0.08);"><div style="font-size:11px;color:#8892b0;">Alerts (≥{ALERT_SCORE_THRESHOLD})</div><div style="font-size:24px;font-weight:800;color:#ff6b6b;">{len(alerts)}</div></div>
-            <div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,215,0,0.08);"><div style="font-size:11px;color:#8892b0;">Failed</div><div style="font-size:24px;font-weight:800;color:#ffd700;">{failed_count}</div></div>
-        </div>
-        <div style="font-size:12px;color:#8892b0;text-align:center;margin-bottom:10px;">Scan duration: ⏱️ {duration}</div>
-        <hr style="border-color:rgba(0,210,190,0.2);">
-        <h3 style="color:#00d2be;font-size:14px;margin:10px 0;">Top 20 Stocks by Score:</h3>'''
+    body = f'<div style="font-family:Arial;max-width:600px;margin:0 auto;background:#0d1b2a;color:#e6f1ff;padding:20px;border-radius:12px;"><h2 style="color:#00d2be;text-align:center;">🎯 {tf["label"]} Scan Summary</h2><p style="color:#8892b0;text-align:center;">{ksa_str} ({et_str})</p>'
+    body += f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:15px 0;"><div style="text-align:center;padding:10px;border-radius:10px;background:rgba(0,210,190,0.08);"><div style="font-size:11px;color:#8892b0;">Candidates</div><div style="font-size:24px;font-weight:800;color:#00d2be;">{len(all_stocks)}</div></div><div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,107,107,0.08);"><div style="font-size:11px;color:#8892b0;">Alerts (≥{ALERT_SCORE_THRESHOLD})</div><div style="font-size:24px;font-weight:800;color:#ff6b6b;">{len(alerts)}</div></div><div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,215,0,0.08);"><div style="font-size:11px;color:#8892b0;">Failed</div><div style="font-size:24px;font-weight:800;color:#ffd700;">{failed_count}</div></div></div>'
+    body += f'<div style="font-size:12px;color:#8892b0;text-align:center;margin-bottom:10px;">Duration: ⏱️ {duration}</div><hr style="border-color:rgba(0,210,190,0.2);"><h3 style="color:#00d2be;font-size:14px;margin:10px 0;">Top 20 by Score:</h3>'
     for i,s in enumerate(top_stocks,1):
         sc = '#00ff88' if s['explosionScore']>=85 else '#00d2be' if s['explosionScore']>=70 else '#ffd700' if s['explosionScore']>=55 else '#8892b0'
         body += f'<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;margin:4px 0;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);"><div style="display:flex;align-items:center;gap:8px;"><span style="font-size:11px;color:#4a5568;">#{i}</span><span style="font-size:16px;font-weight:800;color:#00d2be;">{s["ticker"]}</span><span style="font-size:11px;color:#8892b0;">{s["name"]}</span></div><div style="display:flex;align-items:center;gap:12px;"><span style="font-size:11px;color:#8892b0;">${s["price"]} · SI:{s["shortInterest"]}% · RSI:{s["rsi"]}</span><span style="font-size:18px;font-weight:800;color:{sc};">{s["explosionScore"]}</span></div></div>'
     body += '<hr style="border-color:rgba(0,210,190,0.2);"><p style="color:#4a5568;font-size:11px;text-align:center;">⚠️ Not financial advice. Full results at hunter.up.railway.app</p></div>'
-    return _send_gmail(subj, body)
+    return _send_email(subj, body)
 
 def fetch_stock_data(ticker, interval='1d', period='1y', max_retries=2):
     for attempt in range(max_retries+1):
@@ -437,7 +416,7 @@ def render_tab(tf_key, wl, manual=False):
             st.session_state[f'last_scan_{tf_key}']=get_et_now()
             st.session_state['scanning_active'] = False
             st.session_state.pop('scanning_tf', None)
-            ec=bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
+            ec=bool(GMAIL_WEBHOOK_URL)
             email_status = ''
             if ec and res:
                 try:
@@ -507,19 +486,19 @@ def main():
     with st.expander(f'⚙️ Watchlist ({len(DEFAULT_WATCHLIST)} stocks)'):
         ct=st.text_area('Tickers',value=', '.join(DEFAULT_WATCHLIST),height=120)
         wl=[t.strip().upper() for t in ct.split(',') if t.strip()]
-    ec=bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
+    ec=bool(GMAIL_WEBHOOK_URL)
     with st.expander('📧 Email'):
         if ec:
-            st.markdown(f'<div style="font-size:0.8rem;color:#00ff88;">✅ {GMAIL_ADDRESS} → {ALERT_TO_EMAIL}</div>',unsafe_allow_html=True)
+            st.markdown(f'<div style="font-size:0.8rem;color:#00ff88;">✅ Webhook configured → {ALERT_TO_EMAIL}</div>',unsafe_allow_html=True)
             st.markdown(f'<div style="font-size:0.75rem;color:#8892b0;margin-top:4px;">Alert threshold: Score ≥ {ALERT_SCORE_THRESHOLD}</div>',unsafe_allow_html=True)
             if st.button('📧 Send Test Email', key='test_email', use_container_width=True):
                 test = [{'ticker':'TEST','name':'Test Alert','capCategory':'Test','marketCap':'$0','price':10.0,'shortInterest':25.0,'volumeChange':500,'rsi':35.0,'mfi':28.0,'catalyst':{'type':'FDA','label':'Test Event','date':'Now'},'historicalMatch':85,'explosionScore':85,'ttmSqueeze':True,'squeezeBars':8,'low52':8.0,'high52':15.0,'pctFromLow':25.0,'shortRatio':5.0,'bbWidth':5.0,'obvTrend':'Bullish','float':'10M','floatShares':10e6,'floatSmall':True,'gapUpTarget':None,'insiderBuys':1,'insiderPct':5.0,'isExploding':False,'prevClose':9.5,'dailyChangePct':5.3,'avgVolume':1e6,'currentVolume':6e6,'volumeMultiple':6.0,'volTrendRising':True,'bollingerSqueeze':True,'news':True,'exchange':'TEST','sector':'biotech','detailedScores':{}}]
                 ok, msg = send_email_alert(test, '1d')
                 if ok:
-                    st.success(f'✅ Email sent! ({msg}) — Check inbox of {ALERT_TO_EMAIL}')
+                    st.success(f'✅ Email sent! Check inbox of {ALERT_TO_EMAIL}')
                 else:
                     st.error(f'❌ Failed: {msg}')
-        else: st.markdown('<div style="font-size:0.8rem;color:#ff6b6b;">⚠️ Set GMAIL_ADDRESS & GMAIL_APP_PASSWORD in Railway</div>',unsafe_allow_html=True)
+        else: st.markdown('<div style="font-size:0.8rem;color:#ff6b6b;">⚠️ Set GMAIL_WEBHOOK_URL in Railway Variables</div>',unsafe_allow_html=True)
     st.markdown('<div style="font-size:0.8rem;font-weight:700;color:#e6f1ff;margin:8px 0;">Manual Scan:</div>',unsafe_allow_html=True)
     c1,c2,c3,c4=st.columns(4); ms={}
     with c1:
