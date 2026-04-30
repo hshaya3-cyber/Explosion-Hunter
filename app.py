@@ -153,14 +153,16 @@ def _send_gmail(subject, html_body):
     msg['From'] = GMAIL_ADDRESS
     msg['To'] = ALERT_TO_EMAIL
     msg.attach(MIMEText(html_body, 'html'))
+    ssl_err = ""
+    tls_err = ""
     # Try SSL first (port 465)
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as srv:
             srv.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             srv.send_message(msg)
         return True, "sent via SSL"
-    except Exception as e1:
-        pass
+    except Exception as e:
+        ssl_err = str(e)[:80]
     # Fallback: TLS (port 587)
     try:
         with smtplib.SMTP('smtp.gmail.com', 587, timeout=30) as srv:
@@ -168,8 +170,9 @@ def _send_gmail(subject, html_body):
             srv.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             srv.send_message(msg)
         return True, "sent via TLS"
-    except Exception as e2:
-        return False, f"SSL: {str(e1)[:80]} | TLS: {str(e2)[:80]}"
+    except Exception as e:
+        tls_err = str(e)[:80]
+    return False, f"SSL: {ssl_err} | TLS: {tls_err}"
 
 def send_email_alert(stocks, tf_key):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD: return False, "not configured"
